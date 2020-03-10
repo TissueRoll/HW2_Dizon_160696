@@ -15,6 +15,20 @@
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 
+void mouse_callback(GLFWwindow* window, double xpos, double ypos);
+void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods);
+
+const unsigned int windowWidth = 640;
+const unsigned int windowHeight = 480;
+glm::vec3 lookDir = glm::vec3(0.0f);
+bool firstMouse = true;
+float yaw = -90.0f;	// yaw is initialized to -90.0 degrees since a yaw of 0.0 results in a direction vector pointing to the right so we initially rotate a bit to the left.
+float pitch = 0.0f;
+float lastX = (float)windowWidth / 2.0;
+float lastY = (float)windowHeight / 2.0;
+float fov = 45.0f;
+bool normalMappingEnable = true;
+
 // Struct containing vertex info
 struct Vertex
 {
@@ -26,6 +40,12 @@ struct Vertex
 
 	// UV coordinates
 	float u, v;
+
+	// Tangent
+	float tx, ty, tz;
+
+	// Bitangent
+	float btx, bty, btz;
 };
 
 int main()
@@ -45,9 +65,6 @@ int main()
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
 	glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
 
-	int windowWidth = 640;
-	int windowHeight = 480;
-
 	// Create a GLFW window
 	GLFWwindow* window = glfwCreateWindow(windowWidth, windowHeight, "Basic Lighting", nullptr, nullptr);
 
@@ -57,6 +74,10 @@ int main()
 		std::cerr << "Cannot create window.";
 		return -1;
 	}
+
+	glfwSetKeyCallback(window, key_callback);
+	glfwSetCursorPosCallback(window, mouse_callback);
+	glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
 
 	// Make the current window as the current context for OpenGL
 	glfwMakeContextCurrent(window);
@@ -127,6 +148,33 @@ int main()
 		20, 21, 22, 22, 23, 20
 	};
 
+	// make the tangent and bitangent vectors
+	for (int i = 0; i < 36; i += 3) {
+		Vertex p0 = cubeVertices[cubeIndices[i]];
+		Vertex p1 = cubeVertices[cubeIndices[i + 1]];
+		Vertex p2 = cubeVertices[cubeIndices[i + 2]];
+		glm::vec3 e1 = glm::vec3(p1.x, p1.y, p1.z) - glm::vec3(p0.x, p0.y, p0.z);
+		glm::vec3 e2 = glm::vec3(p2.x, p2.y, p2.z) - glm::vec3(p0.x, p0.y, p0.z);
+		float dU1 = p1.u - p0.u;
+		float dU2 = p2.u - p0.u;
+		float dV1 = p1.v - p0.v;
+		float dV2 = p2.v - p0.v;
+		float c = 1.0f / (dU1 * dV2 - dU2 * dV1);
+		glm::mat2x3 TB = glm::mat2x3(e1, e2) * glm::mat2(dV2, -dV1, -dU2, dU1) * c;
+		glm::vec3 tangent(TB[0][0], TB[0][1], TB[0][2]);
+		tangent = glm::normalize(tangent);
+		glm::vec3 bitangent(TB[1][0], TB[1][1], TB[1][2]);
+		bitangent = glm::normalize(bitangent);
+		for (int j = 0; j < 3; j++) {
+			cubeVertices[cubeIndices[i + j]].tx = tangent.x;
+			cubeVertices[cubeIndices[i + j]].ty = tangent.y;
+			cubeVertices[cubeIndices[i + j]].tz = tangent.z;
+			cubeVertices[cubeIndices[i + j]].btx = bitangent.x;
+			cubeVertices[cubeIndices[i + j]].bty = bitangent.y;
+			cubeVertices[cubeIndices[i + j]].btz = bitangent.z;
+		}
+	}
+
 	// Vertices of the quad
 	Vertex quadVertices[] =
 	{
@@ -174,6 +222,16 @@ int main()
 	glEnableVertexAttribArray(2);
 	glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, u));
 
+	// Tangent coordinates attribute
+	glEnableVertexAttribArray(3);
+	glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, tx));
+
+	// Bitangent coordinates attribute
+	glEnableVertexAttribArray(4);
+	glVertexAttribPointer(4, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex), (void*)offsetof(Vertex, btx));
+
+	glBindVertexArray(0);
+
 	// Create texture handle for the cube's diffuse map
 	GLuint cubeDiffuseTex;
 	glGenTextures(1, &cubeDiffuseTex);
@@ -198,7 +256,51 @@ int main()
 	stbi_image_free(diffuseData);
 	diffuseData = nullptr;
 
-	glBindVertexArray(0);
+	// Create texture handle for the cube's specular map
+	GLuint cubeSpecularTex;
+	glGenTextures(1, &cubeSpecularTex);
+
+	// Bind our specular texture
+	glBindTexture(GL_TEXTURE_2D, cubeSpecularTex);
+
+	// Set up the parameters for our specular texture
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+
+	// Read the data for our specular map
+	int specularWidth, specularHeight, specularNumChannels;
+	unsigned char* specularData = stbi_load("Textures/container-specular.png", &specularWidth, &specularHeight, &specularNumChannels, 0);
+
+	// Upload the specular map data
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, specularWidth, specularHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, specularData);
+
+	// Since we already uploaded the specular map data to opengl, we don't need it anymore.
+	stbi_image_free(specularData);
+	specularData = nullptr;
+
+	GLuint cubeNormalTex;
+	glGenTextures(1, &cubeNormalTex);
+
+	// Bind our diffuse texture
+	glBindTexture(GL_TEXTURE_2D, cubeNormalTex);
+
+	// Set up the parameters for our diffuse texture
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+
+	int normalWidth, normalHeight, normalNumChannels;
+	unsigned char* normalData = stbi_load("Textures/container-normal.png", &normalWidth, &normalHeight, &normalNumChannels, 0);
+
+	// Upload the normal map data
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, normalWidth, normalHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, normalData);
+
+	// Since we already uploaded the normal map data to opengl, we don't need it anymore.
+	stbi_image_free(normalData);
+	normalData = nullptr;
 
 	// Construct VBO for the quad
 	GLuint quadVbo;
@@ -275,8 +377,6 @@ int main()
 
 	// Camera parameters
 	glm::vec3 eyePosition = glm::vec3(0.0f, 0.0f, 10.0f);
-	float cameraPitch = 0.0f;
-	float cameraYaw = -90.0f;
 	float movementSpeed = 10.0f; // 10 distance units per second
 	float lookSpeed = 45.0f; // 45 degrees per second
 
@@ -298,33 +398,36 @@ int main()
 		float deltaTime = glfwGetTime() - prevTime;
 		prevTime = glfwGetTime();
 
+		if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+			glfwSetWindowShouldClose(window, true);
+
 		// Handle camera look input (up/down)
 		if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS)
 		{
-			cameraPitch += lookSpeed * deltaTime;
+			pitch += lookSpeed * deltaTime;
 		}
 		if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS)
 		{
-			cameraPitch -= lookSpeed *deltaTime;
+			pitch -= lookSpeed *deltaTime;
 		}
-		cameraPitch = glm::clamp(cameraPitch, -89.0f, 89.0f);
+		pitch = glm::clamp(pitch, -89.0f, 89.0f);
 
 		// Handle camera look input (left/right)
 		if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS)
 		{
-			cameraYaw -= lookSpeed * deltaTime;
+			yaw -= lookSpeed * deltaTime;
 		}
 		if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS)
 		{
-			cameraYaw += lookSpeed * deltaTime;
+			yaw += lookSpeed * deltaTime;
 		}
 
 		// Calculate the camera's look direction based on the
 		// camera's pitch and yaw using spherical coordinates
 		glm::vec3 lookDir(0.0f);
-		lookDir.x = cos(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
-		lookDir.y = sin(glm::radians(cameraPitch));
-		lookDir.z = sin(glm::radians(cameraYaw)) * cos(glm::radians(cameraPitch));
+		lookDir.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
+		lookDir.y = sin(glm::radians(pitch));
+		lookDir.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
 
 		// Calculate the right facing vector relative to the camera
 		// by taking the cross product between the camera's look direction and the global up vector
@@ -366,6 +469,42 @@ int main()
 		// Use the shader for the cube
 		glUseProgram(cubeProgram);
 
+		// Pass the eye position vector to the current shader that we're using
+		glUniform3f(glGetUniformLocation(cubeProgram, "eyePos"), eyePosition.x, eyePosition.y, eyePosition.z);
+
+		// Pass directional light parameters to the shader
+		glUniform3fv(glGetUniformLocation(cubeProgram, "dirLight.direction"), 1, glm::value_ptr(glm::vec3(0.0f, -1.0f, 0.0f)));
+		// glUniform3fv(glGetUniformLocation(cubeProgram, "dirLight.direction"), 1, glm::value_ptr(lookDir));
+		glUniform3fv(glGetUniformLocation(cubeProgram, "dirLight.ambient"), 1, glm::value_ptr(glm::vec3(0.05f, 0.05f, 0.05f)));
+		glUniform3fv(glGetUniformLocation(cubeProgram, "dirLight.diffuse"), 1, glm::value_ptr(glm::vec3(1.0f, 1.0f, 1.0f)));
+		glUniform3fv(glGetUniformLocation(cubeProgram, "dirLight.specular"), 1, glm::value_ptr(glm::vec3(1.0f, 1.0f, 1.0f)));
+
+		// Pass point light parameters to the shader
+		glUniform3fv(glGetUniformLocation(cubeProgram, "pointLight.position"), 1, glm::value_ptr(glm::vec3(0.0f, 0.0f, 0.0f)));
+		glUniform3fv(glGetUniformLocation(cubeProgram, "pointLight.ambient"), 1, glm::value_ptr(glm::vec3(0.01f, 0.01f, 0.01f)));
+		glUniform3fv(glGetUniformLocation(cubeProgram, "pointLight.diffuse"), 1, glm::value_ptr(glm::vec3(1.0f, 1.0f, 1.0f)));
+		glUniform3fv(glGetUniformLocation(cubeProgram, "pointLight.specular"), 1, glm::value_ptr(glm::vec3(1.0f, 1.0f, 1.0f)));
+		glUniform1f(glGetUniformLocation(cubeProgram, "pointLight.kConstant"), 1.0f);
+		glUniform1f(glGetUniformLocation(cubeProgram, "pointLight.kLinear"), 0.09f);
+		glUniform1f(glGetUniformLocation(cubeProgram, "pointLight.kQuadratic"), 0.032f);
+
+		// Pass spot light parameters to the shader
+		// We pass the camera position and direction as the spot light position and direction respectively
+		// to emulate a flash light
+		// glm::vec3 temp(0.0f, 0.0f, 0.0f);
+		glUniform3fv(glGetUniformLocation(cubeProgram, "spotLight.position"), 1, glm::value_ptr(eyePosition));
+		glUniform3fv(glGetUniformLocation(cubeProgram, "spotLight.direction"), 1, glm::value_ptr(lookDir));
+		glUniform3fv(glGetUniformLocation(cubeProgram, "spotLight.ambient"), 1, glm::value_ptr(glm::vec3(0.1f, 0.1f, 0.1f)));
+		glUniform3fv(glGetUniformLocation(cubeProgram, "spotLight.diffuse"), 1, glm::value_ptr(glm::vec3(1.0f, 1.0f, 1.0f)));
+		glUniform3fv(glGetUniformLocation(cubeProgram, "spotLight.specular"), 1, glm::value_ptr(glm::vec3(1.0f, 1.0f, 1.0f)));
+		// glUniform3fv(glGetUniformLocation(cubeProgram, "spotLight.ambient"), 1, glm::value_ptr(temp));
+		// glUniform3fv(glGetUniformLocation(cubeProgram, "spotLight.diffuse"), 1, glm::value_ptr(temp));
+		// glUniform3fv(glGetUniformLocation(cubeProgram, "spotLight.specular"), 1, glm::value_ptr(temp));
+		glUniform1f(glGetUniformLocation(cubeProgram, "spotLight.kConstant"), 1.0f);
+		glUniform1f(glGetUniformLocation(cubeProgram, "spotLight.kLinear"), 0.09f);
+		glUniform1f(glGetUniformLocation(cubeProgram, "spotLight.kQuadratic"), 0.032f);
+		glUniform1f(glGetUniformLocation(cubeProgram, "spotLight.cutOffAngle"), glm::radians(12.5f));
+
 		// Pass the projection matrix to the shader
 		glUniformMatrix4fv(glGetUniformLocation(cubeProgram, "projMatrix"), 1, GL_FALSE, glm::value_ptr(projMatrix));
 
@@ -391,8 +530,24 @@ int main()
 			glActiveTexture(GL_TEXTURE0);
 			glBindTexture(GL_TEXTURE_2D, cubeDiffuseTex);
 
+			// Set the active texture unit to 1, and
+			// bind the specular map texture to it
+			glActiveTexture(GL_TEXTURE1);
+			glBindTexture(GL_TEXTURE_2D, cubeSpecularTex);
+
+			// Set the active texture unit to 2, and
+			// bind the specular map texture to it
+			glActiveTexture(GL_TEXTURE2);
+			glBindTexture(GL_TEXTURE_2D, cubeNormalTex);
+
 			// Tell the shader that the diffuse map texture is texture unit 0
 			glUniform1i(glGetUniformLocation(cubeProgram, "diffuseTex"), 0);
+
+			glUniform1i(glGetUniformLocation(cubeProgram, "normalTex"), 2);
+
+			glUniform1i(glGetUniformLocation(cubeProgram, "normalMappingEnable"), (normalMappingEnable ? 1 : 0));
+
+			// glUniformMatrix4fv(glGetUniformLocation(cubeProgram, "modelMatrix"), 1, GL_FALSE, glm::value_ptr(modelMatrix));
 
 			// Draw!
 			glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
@@ -437,4 +592,45 @@ int main()
 	glfwTerminate();
 
 	return 0;
+}
+
+// https://learnopengl.com/Getting-started/Camera
+void mouse_callback(GLFWwindow* window, double xpos, double ypos)
+{
+	if (firstMouse)
+	{
+		lastX = xpos;
+		lastY = ypos;
+		firstMouse = false;
+	}
+
+	float xoffset = xpos - lastX;
+	float yoffset = lastY - ypos;
+	lastX = xpos;
+	lastY = ypos;
+
+	float sensitivity = 0.2;
+	xoffset *= sensitivity;
+	yoffset *= sensitivity;
+
+	yaw += xoffset;
+	pitch += yoffset;
+
+	if (pitch > 89.0f)
+		pitch = 89.0f;
+	if (pitch < -89.0f)
+		pitch = -89.0f;
+
+	glm::vec3 direction;
+	direction.x = cos(glm::radians(yaw)) * cos(glm::radians(pitch));
+	direction.y = sin(glm::radians(pitch));
+	direction.z = sin(glm::radians(yaw)) * cos(glm::radians(pitch));
+	lookDir = glm::normalize(direction);
+}
+
+// https://www.glfw.org/docs/3.3.2/input_guide.html
+void key_callback(GLFWwindow* window, int key, int scancode, int action, int mods)
+{
+	if (key == GLFW_KEY_SPACE && action == GLFW_PRESS)
+		normalMappingEnable = !normalMappingEnable;
 }
