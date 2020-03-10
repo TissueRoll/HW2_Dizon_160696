@@ -21,12 +21,18 @@
     <None Include="quad.fsh">
       <Filter>Source Files</Filter>
     </None>
+    <None Include="skybox.fsh">
+      <Filter>Source Files</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <FxCompile Include="cube.vsh">
       <Filter>Source Files</Filter>
     </FxCompile>
     <FxCompile Include="quad.vsh">
+      <Filter>Source Files</Filter>
+    </FxCompile>
+    <FxCompile Include="skybox.vsh">
       <Filter>Source Files</Filter>
     </FxCompile>
   </ItemGroup>
